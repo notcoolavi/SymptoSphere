@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import NearbyCare from "./NearbyCare";
+import SaveCheck from "./SaveCheck";
 import { PredictionResult, detectEmergencies } from "@/lib/diseaseData";
 
 interface DiseaseResultsProps {
@@ -286,6 +287,8 @@ export default function DiseaseResults({ results, selected = [] }: DiseaseResult
         marginTop: '12px', padding: '6px 12px', fontSize: '11px', cursor: 'pointer', borderRadius: '8px',
         background: 'transparent', color: 'var(--accent-teal)', border: '1px solid var(--border-accent)', fontFamily: 'var(--font-mono)',
       }}>{copied ? 'COPIED' : 'COPY SUMMARY TO SHARE WITH A DOCTOR'}</button>
+
+      <SaveCheck symptoms={selected} results={results.map(r => ({ name: r.name, score: r.score, confidence: r.confidence }))} />
 
       <NearbyCare urgent={emergencies.length > 0} />
 

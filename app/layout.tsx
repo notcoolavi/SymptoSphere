@@ -30,7 +30,7 @@ export default function RootLayout({
       <body
         className={`${syne.variable} ${jetbrains.variable} relative`}
         style={{
-          backgroundImage: "url('/bg.jpg')",
+          backgroundImage: "url('/bg.png')",
           backgroundSize: "cover",
           backgroundPosition: "center",
           minHeight: "100vh",

@@ -20,7 +20,7 @@ export default function ProfileHeader() {
         {/* Avatar with image */}
         <div className="relative bottom-[-28px] z-10 w-16 h-16 rounded-full border-4 border-white overflow-hidden shadow-md">
           <Image
-            src="/avatar.jpg"
+            src="/avatar.png"
             alt="SymptoSphere avatar"
             fill
             className="object-cover"
