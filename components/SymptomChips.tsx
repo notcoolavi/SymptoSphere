@@ -36,6 +36,7 @@ export default function SymptomChips({ symptoms, selected, onToggle, onPredict, 
             <button
               key={sym}
               onClick={() => onToggle(sym)}
+              aria-pressed={isSelected}
               style={{
                 padding: '5px 12px',
                 borderRadius: '20px',

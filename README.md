@@ -266,3 +266,41 @@ This application is intended **for educational purposes only**. It is not a subs
 ## Author
 
 404avinotfound — B.Tech CSE Student
+
+---
+
+## V2.2 – Accuracy and auto-updating data
+
+- **Bayesian scoring** (`lib/diseaseData.ts`): rare symptoms count more than common ones, unrelated symptoms lower a disease's score, and common conditions get a higher prior. Scores are relative probabilities, not "match %".
+- **Confidence levels** (high / moderate / low) based on how many symptoms were given and how far ahead #1 is. Low confidence tells the user which symptoms to check next.
+- **Red-flag detection**: chest pain with arm pain, stroke signs, meningitis signs, breathing emergencies, anaphylaxis and similar combinations show an urgent banner above the results.
+- **Adaptive follow-ups**: `suggestNextSymptoms()` returns the symptoms that best separate the current top candidates.
+- **Auto-updating data**: `scripts/update-db.mjs` rebuilds `data/learned.json` from a public CSV (set the URL in `data/sources.json`). The model refuses to update if held-out accuracy drops. `.github/workflows/update-db.yml` runs it weekly and opens a PR after tests and build pass. Learned statistics are blended with the curated lists, and the more data a disease has, the more it is trusted.
+- **Tests**: `npm test`.
+
+Accuracy numbers on synthetic cases are only a sanity check. Real accuracy has to be measured on a real, clinician-validated dataset.
+
+## V2.3 – Understanding free text and personal context
+
+- **Free-text understanding** (`lib/nlp.ts`): typing "my head is pounding, I keep throwing up, no fever" automatically selects headache and vomiting and removes fever. About 200 phrasings, plural handling and negation, all offline.
+- **Age and sex context**: optional selectors adjust likelihoods. Sex-impossible conditions are excluded, and age shifts conditions such as Alzheimer's, chickenpox and acne.
+- **Duplicate symptom ids merged** (`anaemia`/`anemia`, `skin_rash`/`rash`, `tinnitus`/`ringing_in_ears` and others) so they score consistently.
+- **Inert chips removed**: symptom chips that no condition used are hidden, and Dry Eye Syndrome plus a retinal-detachment red flag were added.
+- **UX**: New Check button, copy-summary button for sharing with a doctor, accessible chip buttons, and an error screen.
+- **Tests**: 15 tests (`npm test`) covering scoring, red flags, NLP, negation and profile effects.
+
+Privacy: everything runs in the browser. No symptoms are sent anywhere.
+
+## V2.4 – Home care, nearby doctors, stability
+
+- **Home care only:** remedy text is filtered so medicine names, vaccines, doses, prescription treatments and doctor referrals are removed (`lib/remedies.ts`). A test fails the build if any medicine term returns to the data. Where a useful home option existed (for example ORS), it's replaced with a home fluid (water, coconut water, broth).
+- **Nearby hospitals and clinics:** after results, users can tap "Find hospitals and clinics near me". The app uses the browser's location and shows name, type, distance, address, a tap-to-call phone number and a directions link. It uses OpenStreetMap by default, or Google Places if `NEXT_PUBLIC_GOOGLE_PLACES_KEY` is set.
+- **Stability:** timeouts on network calls, clear messages for denied location or no results, error boundary, and 22 tests.
+
+**Known limits**
+- OpenStreetMap often lacks phone numbers. Those entries show "Phone not listed" with a directions link. Google Places gives better phone coverage and needs a key.
+- Listings can be out of date. The UI says so.
+- Emergency numbers are India defaults (112, 108). Public use outside India needs a country setting.
+- The Overpass and Google calls were not tested live from the build environment; test them on your machine.
+
+**Not included:** photo-based matching and login/medical history. See the earlier plan.

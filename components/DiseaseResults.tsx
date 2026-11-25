@@ -1,8 +1,11 @@
 "use client";
-import { PredictionResult } from "@/lib/diseaseData";
+import { useState } from "react";
+import NearbyCare from "./NearbyCare";
+import { PredictionResult, detectEmergencies } from "@/lib/diseaseData";
 
 interface DiseaseResultsProps {
   results: PredictionResult[];
+  selected?: string[];
 }
 
 const rankConfig = [
@@ -11,11 +14,34 @@ const rankConfig = [
   { label: '03', color: '#A06B4A', bg: 'rgba(160,107,74,0.08)', border: 'rgba(160,107,74,0.2)' },
 ];
 
-export default function DiseaseResults({ results }: DiseaseResultsProps) {
+export default function DiseaseResults({ results, selected = [] }: DiseaseResultsProps) {
   const top = results[0];
+  const emergencies = detectEmergencies(selected);
+  const pretty = (s: string) => s.replace(/_/g, " ");
+  const [copied, setCopied] = useState(false);
+  const copySummary = async () => {
+    const text = [
+      "SymptoSphere summary (educational only, not medical advice)",
+      "Symptoms: " + selected.map(pretty).join(", "),
+      ...results.map((r, i) => `${i + 1}. ${r.name} (${r.score}%, ${r.confidence} confidence)`),
+      "Please consult a qualified healthcare professional.",
+    ].join("\n");
+    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* clipboard unavailable */ }
+  };
 
   return (
     <div style={{ marginTop: '16px' }}>
+      {emergencies.map(e => (
+        <div key={e.title} role="alert" style={{
+          marginBottom: '12px', padding: '12px 14px', borderRadius: '10px',
+          background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.5)',
+        }}>
+          <div style={{ fontSize: '12px', fontWeight: 700, color: '#EF4444', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', marginBottom: '4px' }}>
+            URGENT: {e.title.toUpperCase()}
+          </div>
+          <div style={{ fontSize: '12px', color: 'var(--text-primary)', lineHeight: 1.5 }}>{e.message}</div>
+        </div>
+      ))}
       <div style={{
         fontSize: '11px',
         color: 'var(--accent-teal)',
@@ -130,7 +156,7 @@ export default function DiseaseResults({ results }: DiseaseResultsProps) {
                   letterSpacing: '0.06em',
                   marginBottom: '8px',
                 }}>
-                  SUGGESTED REMEDIES
+                  HOME CARE TIPS
                 </div>
 
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
@@ -183,7 +209,7 @@ export default function DiseaseResults({ results }: DiseaseResultsProps) {
               letterSpacing: '0.08em',
               fontWeight: 600,
             }}>
-              MOST LIKELY DIAGNOSIS
+              TOP POSSIBILITY
             </span>
             <span style={{
               marginLeft: 'auto',
@@ -192,7 +218,7 @@ export default function DiseaseResults({ results }: DiseaseResultsProps) {
               fontFamily: 'var(--font-mono)',
               fontWeight: 600,
             }}>
-              {top.score}% MATCH
+              {top.score}% · {top.confidence.toUpperCase()} CONFIDENCE
             </span>
           </div>
 
@@ -206,7 +232,7 @@ export default function DiseaseResults({ results }: DiseaseResultsProps) {
               marginBottom: '6px',
               letterSpacing: '-0.01em',
             }}>
-              You most likely have{' '}
+              {top.confidence === 'high' ? 'Your symptoms most closely match ' : top.confidence === 'moderate' ? 'Your symptoms may fit ' : 'Not enough information to be sure. The closest match is '}
               <span style={{ color: '#00D9A6' }}>{top.name}</span>.
             </p>
 
@@ -220,6 +246,12 @@ export default function DiseaseResults({ results }: DiseaseResultsProps) {
               {top.data.description}
             </p>
 
+            {top.confidence !== 'high' && top.missingKeySymptoms.length > 0 && (
+              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: '12px' }}>
+                To narrow this down, check whether you also have: {top.missingKeySymptoms.map(pretty).join(', ')}.
+              </p>
+            )}
+
             <div style={{
               fontSize: '10px',
               color: 'var(--text-muted)',
@@ -227,7 +259,7 @@ export default function DiseaseResults({ results }: DiseaseResultsProps) {
               letterSpacing: '0.06em',
               marginBottom: '8px',
             }}>
-              RECOMMENDED REMEDIES
+              HOME CARE TIPS (NOT MEDICINE)
             </div>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
@@ -249,6 +281,13 @@ export default function DiseaseResults({ results }: DiseaseResultsProps) {
           </div>
         </div>
       )}
+
+      <button onClick={copySummary} style={{
+        marginTop: '12px', padding: '6px 12px', fontSize: '11px', cursor: 'pointer', borderRadius: '8px',
+        background: 'transparent', color: 'var(--accent-teal)', border: '1px solid var(--border-accent)', fontFamily: 'var(--font-mono)',
+      }}>{copied ? 'COPIED' : 'COPY SUMMARY TO SHARE WITH A DOCTOR'}</button>
+
+      <NearbyCare urgent={emergencies.length > 0} />
 
       {/* Footer warning */}
       <div style={{

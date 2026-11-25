@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "tsx --test tests/*.test.ts",
+    "update-db": "node scripts/update-db.mjs"
   },
   "dependencies": {
     "next": "15.5.15",
@@ -22,6 +24,7 @@
     "eslint-config-next": "15.5.15",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

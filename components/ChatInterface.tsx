@@ -1,6 +1,7 @@
 "use client";
 import { useState, useRef, useEffect, useCallback } from "react";
-import { predictDiseases, getSuggestedSymptoms, PredictionResult } from "@/lib/diseaseData";
+import { predictDiseases, getSuggestedSymptoms, suggestNextSymptoms, isScorable, prettySymptom, PredictionResult, Profile, AgeGroup, Sex } from "@/lib/diseaseData";
+import { extractSymptoms } from "@/lib/nlp";
 import { getRuleChatResponse } from "@/lib/chatEngine";
 import SymptomChips from "./SymptomChips";
 import DiseaseResults from "./DiseaseResults";
@@ -11,6 +12,7 @@ export interface ChatMessage {
   type?: "text" | "symptoms" | "results";
   suggestedSymptoms?: string[];
   results?: PredictionResult[];
+  selected?: string[];
 }
 
 export default function ChatInterface() {
@@ -26,6 +28,7 @@ export default function ChatInterface() {
   const [selectedSymptoms, setSelectedSymptoms] = useState<Set<string>>(new Set());
   const [userTurnCount, setUserTurnCount] = useState(0);
   const [isTyping, setIsTyping] = useState(false);
+  const [profile, setProfile] = useState<Profile>({});
 
   const chatRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -45,37 +48,59 @@ export default function ChatInterface() {
   const runPrediction = useCallback(() => {
     if (selectedSymptoms.size === 0) return;
     const syms = [...selectedSymptoms];
-    const results = predictDiseases(syms);
+    const results = predictDiseases(syms, profile);
     setMessages((prev) => [
       ...prev,
       { role: "user", content: `Analyzing ${syms.length} symptom${syms.length > 1 ? 's' : ''}: ${syms.join(", ")}` },
-      { role: "assistant", content: "Analysis complete. Here are the most probable conditions based on your symptom profile:\n\n Please! Consult a Health Professional.", type: "results", results },
+      { role: "assistant", content: "Analysis complete. Here are the most probable conditions based on your symptom profile:\n\n Please! Consult a Health Professional.", type: "results", results, selected: syms },
     ]);
-  }, [selectedSymptoms]);
+  }, [selectedSymptoms, profile]);
+
+  const resetChat = () => {
+    setMessages([{ role: "assistant", content: "New check started. Describe how you feel, for example: 'I have a fever and a sore throat, but no cough'.", type: "text" }]);
+    setSelectedSymptoms(new Set());
+    setUserTurnCount(0);
+    setInput("");
+    setIsTyping(false);
+  };
 
   const sendMessage = () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text || isTyping) return;
     setInput("");
-    const userMsg: ChatMessage = { role: "user", content: text };
-    setMessages((prev) => [...prev, userMsg]);
-    const response = getRuleChatResponse(text, userTurnCount);
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
+
+    // 1. Understand free text: add mentioned symptoms, drop ones the user says they don't have
+    const ex = extractSymptoms(text);
+    const nextSel = new Set(selectedSymptoms);
+    ex.present.forEach((s) => nextSel.add(s));
+    ex.absent.forEach((s) => nextSel.delete(s));
+    setSelectedSymptoms(nextSel);
+
+    // 2. Decide the reply
+    const rule = getRuleChatResponse(text, userTurnCount);
+    let content = rule.text;
+    let showChips = rule.showSymptoms;
+    let chips = rule.symptoms.length > 0 ? rule.symptoms : getSuggestedSymptoms(text);
+
+    const enough = ex.present.length >= 2 || (ex.present.length >= 1 && (userTurnCount >= 1 || nextSel.size >= 2));
+    if (enough) {
+      const noted = ex.absent.length ? ` Noted that you don't have: ${ex.absent.map(prettySymptom).join(", ")}.` : "";
+      content = `I picked up: ${ex.present.map(prettySymptom).join(", ")}.${noted}\n\nTick anything else that applies, then press Predict.`;
+      chips = suggestNextSymptoms([...nextSel], 8, profile);
+      showChips = true;
+    }
+    const list = [...new Set([...nextSel, ...chips])].filter(isScorable).slice(0, 18);
+
     setUserTurnCount((prev) => prev + 1);
     setIsTyping(true);
     setTimeout(() => {
       setIsTyping(false);
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          content: response.text,
-          type: response.showSymptoms ? "symptoms" : "text",
-          suggestedSymptoms: response.showSymptoms
-            ? response.symptoms.length > 0 ? response.symptoms : getSuggestedSymptoms(text)
-            : undefined,
-        },
+        { role: "assistant", content, type: showChips ? "symptoms" : "text", suggestedSymptoms: showChips ? list : undefined },
       ]);
-    }, 700);
+    }, 500);
   };
 
   return (
@@ -177,6 +202,11 @@ export default function ChatInterface() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button onClick={resetChat} aria-label="Start a new check" style={{
+              padding: '4px 10px', fontSize: '11px', cursor: 'pointer', borderRadius: '8px',
+              background: 'transparent', color: 'var(--accent-teal)', border: '1px solid var(--border-accent)',
+              fontFamily: 'var(--font-mono)', letterSpacing: '0.05em',
+            }}>NEW CHECK</button>
             <div className="status-dot" />
             <span style={{ fontSize: '11px', color: 'var(--accent-teal)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>ACTIVE</span>
           </div>
@@ -199,6 +229,22 @@ export default function ChatInterface() {
           <span style={{ fontSize: '11px', color: 'rgba(239,68,68,0.8)', fontFamily: 'var(--font-mono)', letterSpacing: '0.03em' }}>
             FOR EDUCATIONAL PURPOSES ONLY!! NOT A SUBSTITUTE FOR MEDICAL ADVICE. PLEASE CONSULT A DOCTOR.
           </span>
+        </div>
+
+        {/* PROFILE (optional context that sharpens results) */}
+        <div style={{ padding: '6px 1.5rem', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>OPTIONAL</span>
+          {[
+            { label: 'Age group', value: profile.age ?? '', set: (v: string) => setProfile(p => ({ ...p, age: (v || undefined) as AgeGroup | undefined })),
+              opts: [['', 'Age: any'], ['child', 'Child (under 13)'], ['teen', 'Teen (13-19)'], ['adult', 'Adult (20-64)'], ['senior', 'Senior (65+)']] },
+            { label: 'Sex', value: profile.sex ?? '', set: (v: string) => setProfile(p => ({ ...p, sex: (v || undefined) as Sex | undefined })),
+              opts: [['', 'Sex: any'], ['female', 'Female'], ['male', 'Male']] },
+          ].map(f => (
+            <select key={f.label} aria-label={f.label} value={f.value} onChange={(e) => f.set(e.target.value)}
+              style={{ background: 'var(--bg-surface)', color: 'var(--text-secondary)', border: '1px solid var(--border-dim)', borderRadius: '8px', padding: '4px 8px', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
+              {f.opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          ))}
         </div>
 
         {/* CHAT AREA */}
@@ -283,7 +329,7 @@ export default function ChatInterface() {
                 )}
 
                 {msg.type === "results" && msg.results && (
-                  <DiseaseResults results={msg.results} />
+                  <DiseaseResults results={msg.results} selected={msg.selected} />
                 )}
               </div>
 

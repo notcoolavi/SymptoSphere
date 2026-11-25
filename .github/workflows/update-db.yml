@@ -1,0 +1,25 @@
+name: Update symptom database
+on:
+  schedule: [{ cron: "0 3 * * 1" }]   # every Monday 03:00 UTC
+  workflow_dispatch: {}
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: node scripts/update-db.mjs
+      - run: npm test
+      - run: npm run build
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(data): refresh learned symptom model"
+          title: "Weekly symptom database refresh"
+          body: "Automated update from data/sources.json. Validation and build passed. Review held-out accuracy in data/learned.json before merging."
+          branch: bot/update-db
+          add-paths: data/learned.json

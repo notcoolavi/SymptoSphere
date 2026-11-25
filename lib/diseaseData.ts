@@ -1,3 +1,5 @@
+import { sanitizeRemedies } from "./remedies";
+import learnedJson from "../data/learned.json";
 export const SYMPTOM_MAP: Record<string, string[]> = {
   fever: ["high_fever","low_grade_fever","chills","sweating","fatigue","body_ache","headache","loss_of_appetite","nausea","night_sweats"],
   headache: ["severe_headache","throbbing_headache","nausea","vomiting","sensitivity_to_light","sensitivity_to_sound","neck_stiffness","visual_disturbances","dizziness","fatigue","aura"],
@@ -454,6 +456,12 @@ export const DISEASE_DB: Record<string, Disease> = {
     remedies: ["Antibiotic eye drops (bacterial)","Antihistamine drops (allergic)","Cold/warm compress","Avoid touching eyes","Wash hands frequently","Avoid contact lenses","Do not share towels"],
     color: "red",
   },
+  "Dry Eye Syndrome": {
+    symptoms: ["dry_eyes","red_eyes","itchy_eyes","watery_eyes","eye_pain","blurred_vision","sensitivity_to_light"],
+    description: "A common condition where tears don't lubricate the eyes well, causing dryness, irritation and fluctuating vision.",
+    remedies: ["Preservative-free artificial tears","Warm compresses","Take screen breaks (20-20-20 rule)","Use a humidifier","Avoid smoke and wind","Eye doctor check-up if persistent"],
+    color: "green",
+  },
   "Glaucoma": {
     symptoms: ["eye_pain","blurred_vision","visual_disturbances","headache","nausea","vomiting","halos_around_lights","reduced_peripheral_vision"],
     description: "A group of eye conditions damaging the optic nerve, often caused by high eye pressure.",
@@ -545,29 +553,201 @@ export const DISEASE_DB: Record<string, Disease> = {
 
 };
 
+// ── Canonical symptom ids: the data contains a few duplicate spellings ──
+export const SYMPTOM_ALIASES: Record<string, string> = {
+  anaemia: "anemia",
+  skin_rash: "rash",
+  tightness_in_chest: "chest_tightness",
+  tinnitus: "ringing_in_ears",
+  fever: "high_fever",
+};
+export const canon = (s: string) => SYMPTOM_ALIASES[s] ?? s;
+for (const d of Object.values(DISEASE_DB)) {
+  d.symptoms = [...new Set(d.symptoms.map(canon))];
+  d.remedies = sanitizeRemedies(d.remedies);
+}
+for (const k of Object.keys(SYMPTOM_MAP)) SYMPTOM_MAP[k] = [...new Set(SYMPTOM_MAP[k].map(canon))];
+
+export type AgeGroup = "child" | "teen" | "adult" | "senior";
+export type Sex = "female" | "male";
+export interface Profile { age?: AgeGroup; sex?: Sex }
+
+const OLD_AGE_DISEASES = ["Alzheimer's Disease","Parkinson's Disease","Osteoporosis","Cataracts","Glaucoma","Heart Attack (MI)","Angina","Heart Failure","Arrhythmia","Stroke","Lung Cancer","Breast Cancer","Colorectal Cancer","Arthritis (Osteoarthritis)","Hypertension","Diabetes (Type 2)","Gout","Kidney Disease (CKD)","Multiple Sclerosis"];
+const AGE_MULT: Record<AgeGroup, Record<string, number>> = {
+  child:  { "Chickenpox":3,"Otitis Media (Ear Infection)":3,"Whooping Cough (Pertussis)":2,"Tonsillitis":1.5,"Strep Throat":1.5,"Diabetes (Type 1)":2,"Acne":0.3,"PCOS":0.1,"Polycystic Ovary Syndrome (PCOS)":0.05,"Endometriosis":0.05,"Obesity":0.5, ...Object.fromEntries(OLD_AGE_DISEASES.map(n => [n, 0.05])) },
+  teen:   { "Acne":3,"Diabetes (Type 1)":2,"Polycystic Ovary Syndrome (PCOS)":1.5,"Chickenpox":1.2, ...Object.fromEntries(OLD_AGE_DISEASES.map(n => [n, 0.15])) },
+  adult:  { "Chickenpox":0.6,"Whooping Cough (Pertussis)":0.7 },
+  senior: { "Alzheimer's Disease":5,"Parkinson's Disease":5,"Osteoporosis":4,"Cataracts":6,"Glaucoma":4,"Heart Attack (MI)":3,"Angina":3,"Heart Failure":4,"Stroke":3,"Lung Cancer":3,"Breast Cancer":2,"Colorectal Cancer":3,"Arthritis (Osteoarthritis)":4,"Hypertension":2,"Diabetes (Type 2)":2,"Gout":2,"Kidney Disease (CKD)":2,"Arrhythmia":3,
+            "Chickenpox":0.3,"Acne":0.1,"Polycystic Ovary Syndrome (PCOS)":0.05,"Endometriosis":0.1,"Whooping Cough (Pertussis)":0.5,"Diabetes (Type 1)":0.2,"Otitis Media (Ear Infection)":0.5 },
+};
+const SEX_MULT: Record<Sex, Record<string, number>> = {
+  male:   { "Polycystic Ovary Syndrome (PCOS)":0,"Endometriosis":0,"Breast Cancer":0.05 },
+  female: { "Gout":0.5,"Osteoporosis":1.5,"Lupus (SLE)":3,"Hypothyroidism":2,"Urinary Tract Infection (UTI)":2,"Fibromyalgia":2,"Migraine":1.5 },
+};
+const profileLogPrior = (name: string, p?: Profile) =>
+  Math.log((p?.age ? AGE_MULT[p.age][name] ?? 1 : 1) * (p?.sex ? SEX_MULT[p.sex][name] ?? 1 : 1));
+
+export type ConfidenceLevel = "high" | "moderate" | "low";
+
 export interface PredictionResult {
   name: string;
-  score: number;
+  score: number;        // 0-100 relative likelihood among all conditions (sums to ~100 over the full DB)
   data: Disease;
   matches: number;
+  confidence: ConfidenceLevel;
+  matchedSymptoms: string[];
+  missingKeySymptoms: string[];
 }
 
-export function predictDiseases(selectedSymptoms: string[]): PredictionResult[] {
-  if (!selectedSymptoms.length) return [];
+export interface EmergencyAlert {
+  title: string;
+  message: string;
+}
 
-  const results = Object.entries(DISEASE_DB).map(([name, data]) => {
-    const matches = selectedSymptoms.filter(s => data.symptoms.includes(s)).length;
-    const matchRatio = matches / data.symptoms.length;
-    const coverageRatio = matches / selectedSymptoms.length;
-    const score = Math.round(((matchRatio + coverageRatio) / 2) * 100);
-    return { name, score, data, matches };
+// ── Red-flag rules: checked BEFORE ranking. Any hit shows an urgent banner. ──
+const RED_FLAGS: { all: string[]; any?: string[]; alert: EmergencyAlert }[] = [
+  { all: ["chest_pain"], any: ["left_arm_pain","sweating","shortness_of_breath","dizziness","tightness_in_chest"],
+    alert: { title: "Possible heart emergency", message: "Chest pain with arm pain, sweating, breathlessness or dizziness can signal a heart attack. Call your local emergency number now (India: 112 / 108)." } },
+  { all: ["difficulty_speaking"], any: ["numbness","confusion","loss_of_balance","blurred_vision","severe_headache"],
+    alert: { title: "Possible stroke", message: "Sudden speech difficulty with numbness, confusion, balance or vision problems needs emergency care immediately (note the time symptoms began)." } },
+  { all: ["high_fever","neck_stiffness"], any: ["severe_headache","sensitivity_to_light","confusion","rash"],
+    alert: { title: "Possible meningitis", message: "Fever with a stiff neck plus severe headache, light sensitivity, confusion or rash is an emergency. Go to the nearest hospital now." } },
+  { all: ["shortness_of_breath"], any: ["bluish_lips","low_oxygen","confusion"],
+    alert: { title: "Severe breathing difficulty", message: "Breathlessness with blue lips, low oxygen or confusion needs emergency care now." } },
+  { all: ["swelling","shortness_of_breath"], any: ["hives","wheezing","rash"],
+    alert: { title: "Possible severe allergic reaction", message: "Swelling with breathing trouble after an allergen can be anaphylaxis. Use an epinephrine auto-injector if prescribed and call emergency services." } },
+  { all: ["floaters"], any: ["visual_disturbances","blurred_vision","reduced_peripheral_vision","eye_pain"],
+    alert: { title: "Possible retinal problem", message: "A sudden shower of floaters, flashes of light or a curtain over your vision can mean retinal detachment. See an eye doctor or emergency department the same day." } },
+  { all: ["seizures"], alert: { title: "Seizure", message: "A first seizure, or one lasting over 5 minutes, needs urgent medical evaluation." } },
+  { all: ["blood_in_stool"], any: ["dizziness","fainting","rapid_heartbeat","abdominal_pain"],
+    alert: { title: "Possible internal bleeding", message: "Blood in stool with dizziness, fainting or severe pain needs urgent medical care." } },
+  { all: ["blood_in_sputum"], any: ["shortness_of_breath","chest_pain"],
+    alert: { title: "Coughing blood with breathing symptoms", message: "Please seek urgent medical evaluation." } },
+  { all: ["hopelessness"], any: ["depression","social_withdrawal"],
+    alert: { title: "You are not alone", message: "If you are having thoughts of harming yourself, contact a crisis line right away (India: Tele-MANAS 14416, or 112) or talk to someone you trust." } },
+];
+
+export function detectEmergencies(selected: string[]): EmergencyAlert[] {
+  const set = new Set(selected.map(canon));
+  return RED_FLAGS.filter(r => r.all.every(s => set.has(s)) && (!r.any || r.any.some(s => set.has(s)))).map(r => r.alert);
+}
+
+// ── Optional learned statistics, produced by scripts/update-db.mjs ──
+// Shape: { diseases: { [name]: { n: number, symptoms: { [sym]: count } } } }
+// Imported lazily so the app still works if the file is absent.
+interface LearnedModel { diseases: Record<string, { n: number; symptoms: Record<string, number> }> }
+const LEARNED: LearnedModel | null = Object.keys((learnedJson as LearnedModel).diseases || {}).length ? (learnedJson as LearnedModel) : null;
+
+// ── Model build (runs once at import) ──
+const NAMES = Object.keys(DISEASE_DB);
+const N = NAMES.length;
+const ALL_SYMPTOMS = new Set<string>(Object.values(DISEASE_DB).flatMap(d => d.symptoms));
+const V = ALL_SYMPTOMS.size;
+
+// document frequency per symptom -> IDF (rare symptoms are more diagnostic)
+const DF: Record<string, number> = {};
+for (const d of Object.values(DISEASE_DB)) for (const s of new Set(d.symptoms)) DF[s] = (DF[s] || 0) + 1;
+const IDF = (s: string) => Math.log((N + 1) / ((DF[s] || 0) + 0.5));
+
+// Per-disease symptom probabilities P(symptom | disease).
+// Curated lists give listed symptoms a high base probability; earlier entries in a
+// list are treated as more characteristic. Learned counts (if any) are blended in.
+function symptomProb(disease: string, sym: string): number {
+  const d = DISEASE_DB[disease];
+  const idx = d.symptoms.indexOf(sym);
+  let p: number;
+  if (idx >= 0) {
+    const rankBoost = 1 - 0.25 * (idx / Math.max(1, d.symptoms.length - 1)); // 1.0 -> 0.75
+    p = 0.85 * rankBoost;
+  } else {
+    p = 0.02;
+  }
+  const L = LEARNED?.diseases[disease];
+  if (L && L.n >= 20) {
+    const learned = ((L.symptoms[sym] || 0) + 0.5) / (L.n + 1);
+    const w = Math.min(0.8, L.n / (L.n + 200)); // more data -> trust learned more
+    p = (1 - w) * p + w * learned;
+  }
+  return Math.min(0.97, Math.max(0.005, p));
+}
+
+// Precompute log-likelihood tables
+const LOG_P: Record<string, Record<string, number>> = {};
+const LOG_NOT_P: Record<string, number> = {}; // sum over all symptoms of log(1-p), baseline
+for (const name of NAMES) {
+  LOG_P[name] = {};
+  let base = 0;
+  for (const s of ALL_SYMPTOMS) {
+    const p = symptomProb(name, s);
+    LOG_P[name][s] = Math.log(p) - Math.log(1 - p);
+    base += Math.log(1 - p);
+  }
+  LOG_NOT_P[name] = base;
+}
+
+// Prior: common conditions are more likely than rare/serious ones a priori.
+const COMMON = new Set(["Common Cold","Influenza","Gastroenteritis","Migraine","Urinary Tract Infection (UTI)","Allergic Reaction","Sinusitis","Acne","Conjunctivitis (Pink Eye)","Hypertension","Anxiety Disorder","Insomnia","Eczema","Acid Reflux (GERD)","Bronchitis","Tonsillitis","Strep Throat","Anemia","Contact Dermatitis","Otitis Media (Ear Infection)"]);
+const RARE_SEVERE = new Set(["Lung Cancer","Breast Cancer","Colorectal Cancer","HIV/AIDS","Multiple Sclerosis","Lupus (SLE)","Parkinson's Disease","Alzheimer's Disease","Meningitis","Tuberculosis (TB)","Crohn's Disease","Epilepsy","Typhus","Zika Virus","Whooping Cough (Pertussis)","Cholera","Celiac Disease","Glaucoma"]);
+function logPrior(name: string): number {
+  if (COMMON.has(name)) return Math.log(3);
+  if (RARE_SEVERE.has(name)) return Math.log(0.4);
+  return 0;
+}
+
+export function predictDiseases(selectedSymptoms: string[], profile?: Profile): PredictionResult[] {
+  const selected = [...new Set(selectedSymptoms.map(canon))];
+  if (!selected.length) return [];
+
+  const known = selected.filter(s => ALL_SYMPTOMS.has(s));
+  const rows = NAMES.map(name => {
+    const d = DISEASE_DB[name];
+    // Naive Bayes in log-odds form: baseline + prior + sum of per-symptom log-odds
+    let ll = LOG_NOT_P[name] + logPrior(name) + profileLogPrior(name, profile);
+    for (const s of known) ll += LOG_P[name][s];
+    const matchedSymptoms = selected.filter(s => d.symptoms.includes(s));
+    return { name, d, ll, matchedSymptoms };
   });
 
-  return results
-    .filter(r => r.matches >= 1)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
+  // softmax -> posterior probabilities across all diseases
+  const maxLL = Math.max(...rows.map(r => r.ll));
+  const exps = rows.map(r => Math.exp(r.ll - maxLL));
+  const Z = exps.reduce((a, b) => a + b, 0);
+
+  const ranked = rows
+    .map((r, i) => ({ ...r, post: exps[i] / Z }))
+    .filter(r => r.matchedSymptoms.length >= 1 && r.post > 0)
+    .sort((a, b) => b.post - a.post);
+
+  const top = ranked.slice(0, 3);
+  const evidence = known.reduce((a, s) => a + IDF(s), 0); // total diagnostic weight supplied by user
+  const margin = top.length > 1 ? top[0].post - top[1].post : top[0]?.post ?? 0;
+
+  return top.map((r, i) => {
+    const score = Math.max(1, Math.round(r.post * 100));
+    let confidence: ConfidenceLevel = "low";
+    if (i === 0 && known.length >= 4 && r.post >= 0.5 && margin >= 0.2 && evidence >= 6) confidence = "high";
+    else if (r.post >= 0.25 && known.length >= 3) confidence = "moderate";
+    const missingKeySymptoms = r.d.symptoms.slice(0, 4).filter(s => !selected.includes(s));
+    return { name: r.name, score, data: r.d, matches: r.matchedSymptoms.length, confidence, matchedSymptoms: r.matchedSymptoms, missingKeySymptoms };
+  });
 }
+
+/** Adaptive follow-up: the symptom that best separates the current top candidates (excluding ones already chosen). */
+export function suggestNextSymptoms(selectedSymptoms: string[], limit = 6, profile?: Profile): string[] {
+  const selected = new Set(selectedSymptoms.map(canon));
+  const preds = predictDiseases(selectedSymptoms, profile);
+  if (!preds.length) return [];
+  const scores: Record<string, number> = {};
+  for (const p of preds) {
+    p.data.symptoms.forEach((s, idx) => {
+      if (selected.has(s)) return;
+      scores[s] = (scores[s] || 0) + p.score * IDF(s) * (1 - 0.3 * idx / p.data.symptoms.length);
+    });
+  }
+  return Object.entries(scores).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([s]) => s);
+}
+
+export const MODEL_INFO = { diseases: N, symptoms: V, learned: !!LEARNED };
 
 export function getSuggestedSymptoms(input: string): string[] {
   const low = input.toLowerCase();
@@ -587,3 +767,9 @@ export function getSuggestedSymptoms(input: string): string[] {
   const all = [...new Set(Object.values(SYMPTOM_MAP).flat())];
   return all.slice(0, 14);
 }
+export const KNOWN_SYMPTOMS = new Set<string>(Object.values(DISEASE_DB).flatMap(d => d.symptoms));
+
+const RED_FLAG_ONLY = new Set(RED_FLAGS.flatMap(r => [...r.all, ...(r.any ?? [])]));
+/** True if a symptom can influence ranking or trigger an urgent warning. Others are hidden from chips. */
+export const isScorable = (sym: string) => KNOWN_SYMPTOMS.has(canon(sym)) || RED_FLAG_ONLY.has(canon(sym));
+export const prettySymptom = (s: string) => s.replace(/_/g, " ");
